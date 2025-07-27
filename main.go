@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -16,7 +17,36 @@ type exitNode struct {
 }
 
 func (e *exitNode) String() string {
-	return fmt.Sprintf("%s %s %s %t\n", e.name, e.country, e.city, e.selected)
+	return fmt.Sprintf("%s - %s %s\n", e.city, e.country, e.name)
+}
+
+func newNode(peer Node) *exitNode {
+	var country, city string
+
+	if peer.Location.Country == "" {
+		country = "N/A"
+	} else {
+		country = peer.Location.Country
+	}
+
+	if peer.ExitNode {
+		city = "Disable: "
+	}
+
+	if peer.Location.City == "" {
+		city += "N/A"
+	} else {
+		city += peer.Location.City
+	}
+
+	node := exitNode{
+		name:     peer.DnsName,
+		country:  country,
+		city:     city,
+		selected: peer.ExitNode,
+	}
+
+	return &node
 }
 
 type exitNodes []exitNode
@@ -31,6 +61,7 @@ func (e *exitNodes) String() string {
 
 func main() {
 	tailscaleStatusCmd := exec.Command("tailscale", "status", "--json")
+	tailscaleStatusCmd.Stderr = os.Stderr
 	output, err := tailscaleStatusCmd.Output()
 	if err != nil {
 		log.Fatal(err)
@@ -42,35 +73,35 @@ func main() {
 
 	for _, peer := range status.Peer {
 		if peer.ExitNodeOption {
-			node := exitNode{
-				name:     peer.DnsName,
-				country:  peer.Location.Country,
-				city:     peer.Location.City,
-				selected: peer.ExitNode,
-			}
+			node := newNode(peer)
 			if peer.ExitNode {
-				allExitNodes = append(exitNodes{node}, allExitNodes...)
+				allExitNodes = append(exitNodes{*node}, allExitNodes...)
 			} else {
-				allExitNodes = append(allExitNodes, node)
+				allExitNodes = append(allExitNodes, *node)
 			}
 		}
 	}
 
 	nodeListString := allExitNodes.String()
-	if allExitNodes[0].selected {
-		nodeListString = " disable\n" + nodeListString
-	}
 
-	wofiCmd := exec.Command("wofi", "--show", "dmenu", "-W", "50%")
+	wofiCmd := exec.Command("wofi", "--show", "dmenu", "-W", "25%")
 	wofiCmd.Stdin = strings.NewReader(nodeListString)
 	wofiOuput, err := wofiCmd.Output()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	name := strings.Split(string(wofiOuput), " ")[0]
+	var name string
+	if strings.HasPrefix(string(wofiOuput), "Disable") {
+		name = ""
+	} else {
+		splitWofiOuput := strings.Split(string(wofiOuput), " ")
+		name = splitWofiOuput[len(splitWofiOuput)-1]
+		name = strings.TrimSuffix(name, "\n")
+	}
 
 	tailscaleSetExitNodeCmd := exec.Command("tailscale", "set", "--exit-node", name)
+	tailscaleSetExitNodeCmd.Stderr = os.Stderr
 	err = tailscaleSetExitNodeCmd.Run()
 	if err != nil {
 		log.Fatal(err)
